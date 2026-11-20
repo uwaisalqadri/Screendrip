@@ -25,13 +25,12 @@ enum ScreendropMain {
 struct ScreendropApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @Environment(\.openWindow) var openWindow
-    @AppStorage(ScreendropPreferences.showMenuBarIconKey) private var showMenuBarIcon = true
 
     var body: some Scene {
         let _ = configurePreviewPresentation()
 
-        MenuBarExtra("Screendrop", image: "MenuBarIcon", isInserted: $showMenuBarIcon) {
-            MenuBarView()
+        MenuBarExtra("Screendrop", image: "MenuBarIcon") {
+            LivestreamMenuView()
         }
 
         Window("Screendrop Library", id: "CAPTURE_LIBRARY") {
@@ -160,24 +159,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         if RecordingExportBenchmark.runIfRequested() { return }
         #endif
-        HotkeyManager.shared.registerHotkeys()
         updaterManager.start()
         AgentServer.shared.updateForPreference()
-        RecordingRecoveryCoordinator.recoverInterruptedRecordings()
-        // Indexing is background work; let launch settle first.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-            CaptureLibraryIndex.shared.start()
-        }
         let launchEvent = NSAppleEventManager.shared().currentAppleEvent
         let launchReason = launchEvent?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue
         let launchedInBackground = launchReason == keyAELaunchedAsLogInItem
             || launchReason == keyAELaunchedAsServiceItem
             || CommandLine.arguments.contains(AgentSocket.launchedByAgentArgument)
-        // Let Finder's open-file event reach its editor without also opening a
-        // Library. Login/service launches keep the existing quiet menu-bar mode.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !launchedInBackground, !self.openedFilesAtLaunch else { return }
-            CaptureLibraryModel.shared.show()
+        if !launchedInBackground {
+            showLivestream()
         }
     }
 
@@ -191,10 +181,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onOpenFiles(urls)
     }
 
-    /// Finder, Spotlight and the Dock all reopen the same Library window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        CaptureLibraryModel.shared.show()
+        showLivestream()
         return false
+    }
+
+    private func showLivestream() {
+        Task { await CameraRecordingManager.shared.showOnItsOwn() }
+        FloatingOverlays.shared.restore()
     }
 
     /// Removes the agent socket so a relay sees the app is gone and

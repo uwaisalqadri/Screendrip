@@ -5,8 +5,9 @@
 //  Captures the webcam alongside a screen recording. The camera is written
 //  to its own camera.mov inside the recording session (never burned into
 //  the screen video) so the studio editor can restyle, reposition, or drop
-//  the bubble in post. A floating circular preview shows the user what the
-//  camera sees while recording; the preview panel is excluded from capture.
+//  the bubble in post. A floating preview shows the user what the camera
+//  sees. It is hidden from captures while Screendrop records, and visible to
+//  other recorders when the camera is shown on its own.
 //
 //  Sync: AVCaptureSession stamps buffers with the same host clock
 //  ScreenCaptureKit uses, so the first camera frame's PTS minus the screen
@@ -54,12 +55,18 @@ nonisolated enum RecordingDeviceCatalog {
 }
 
 @MainActor
+@Observable
 final class CameraRecordingManager {
     static let shared = CameraRecordingManager()
 
-    private let engine = CameraCaptureEngine()
-    private var previewPanel: NSPanel?
-    private var activePreviewDisplayID: CGDirectDisplayID?
+    @ObservationIgnored private let engine = CameraCaptureEngine()
+    @ObservationIgnored private var previewPanel: NSPanel?
+    @ObservationIgnored private var activePreviewDisplayID: CGDirectDisplayID?
+    @ObservationIgnored private var previewMoveObserver: NSObjectProtocol?
+    @ObservationIgnored private var lastPreviewFrame: CGRect?
+    /// The camera is open on its own from the menu bar, for recording with
+    /// another app: it stays up until hidden and shows in other captures.
+    private(set) var isShownOnItsOwn = false
     private(set) var isRunning = false
     /// True once frames are actually being written to a `camera.mov`, as
     /// opposed to just warming the sensor for the floating preview.
@@ -83,7 +90,7 @@ final class CameraRecordingManager {
                 showPreview(displayID: displayID)
                 return true
             }
-            await stopPreview()
+            await tearDownPreview()
         }
         guard let device = RecordingDeviceCatalog.camera(withID: deviceID) else { return false }
 
@@ -107,6 +114,28 @@ final class CameraRecordingManager {
     /// camera was toggled off, or the pre-record picker was dismissed
     /// without starting. No-op while an actual recording is using the camera.
     func stopPreview() async {
+        guard !isShownOnItsOwn else { return }
+        await tearDownPreview()
+    }
+
+    func showOnItsOwn() async {
+        let savedID = ScreendropPreferences.recordingCameraDeviceID
+        guard let deviceID = savedID.isEmpty ? RecordingDeviceCatalog.cameras().first?.uniqueID : savedID else { return }
+        isShownOnItsOwn = true
+        let displayID = ActiveDisplayResolver.activeDisplayID(preferPointer: true)
+        guard await startPreview(deviceID: deviceID, displayID: displayID) else {
+            isShownOnItsOwn = false
+            return
+        }
+        previewPanel?.sharingType = .readOnly
+    }
+
+    func hideOnItsOwn() async {
+        isShownOnItsOwn = false
+        await tearDownPreview()
+    }
+
+    private func tearDownPreview() async {
         guard isRunning, !isWriting else { return }
         isRunning = false
         activeDeviceID = nil
@@ -123,6 +152,10 @@ final class CameraRecordingManager {
     /// screen recording itself.
     func start(outputURL: URL, deviceID: String, displayID: CGDirectDisplayID?) async -> Bool {
         guard !isWriting else { return true }
+        if isShownOnItsOwn {
+            isShownOnItsOwn = false
+            PreviewWindowCaptureExclusion.shared.register(window: previewPanel)
+        }
 
         if !isRunning || activeDeviceID != deviceID {
             guard await startPreview(deviceID: deviceID, displayID: displayID) else { return false }
@@ -157,6 +190,7 @@ final class CameraRecordingManager {
 
     func stop() async -> CameraRecordingResult? {
         guard isWriting else { return nil }
+        isShownOnItsOwn = false
         isRunning = false
         isWriting = false
         activeDeviceID = nil
@@ -166,6 +200,7 @@ final class CameraRecordingManager {
 
     func cancel() async {
         guard isRunning else { return }
+        isShownOnItsOwn = false
         isRunning = false
         isWriting = false
         activeDeviceID = nil
@@ -182,55 +217,113 @@ final class CameraRecordingManager {
         }
         hidePreview()
 
-        let diameter: CGFloat = 160
+        let shape = ScreendropPreferences.recordingCameraShape
+        let size = CameraPreviewView.contentSize(shape: shape, width: ScreendropPreferences.recordingCameraPreviewWidth)
         let screen = ActiveDisplayResolver.screen(for: displayID) ?? NSScreen.main
         let visibleFrame = screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 800, height: 600)
-        let origin = CGPoint(
-            x: visibleFrame.maxX - diameter - 24,
-            y: visibleFrame.minY + 24
+        var content = CGRect(
+            x: visibleFrame.maxX - size.width - 24,
+            y: visibleFrame.minY + 24,
+            width: size.width,
+            height: size.height
         )
+        if let origin = ScreendropPreferences.recordingCameraPreviewOrigin {
+            let saved = CGRect(origin: origin, size: size)
+            if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(saved) }) {
+                content = saved
+            }
+        }
+        let panel = FloatingCardView.makePanel(contentRect: content)
+        if isShownOnItsOwn {
+            panel.sharingType = .readOnly
+        } else {
+            PreviewWindowCaptureExclusion.shared.register(window: panel)
+        }
 
-        let panel = NSPanel(
-            contentRect: CGRect(origin: origin, size: CGSize(width: diameter, height: diameter)),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.hidesOnDeactivate = false
-        panel.isFloatingPanel = true
-        panel.isReleasedWhenClosed = false
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isMovableByWindowBackground = true
-        PreviewWindowCaptureExclusion.shared.register(window: panel)
-
-        let container = NSView(frame: CGRect(origin: .zero, size: CGSize(width: diameter, height: diameter)))
-        container.wantsLayer = true
-        container.layer?.cornerRadius = diameter / 2
-        container.layer?.masksToBounds = true
-        container.layer?.backgroundColor = NSColor.black.cgColor
-        container.layer?.borderColor = NSColor.white.withAlphaComponent(0.35).cgColor
-        container.layer?.borderWidth = 1
-
-        let previewLayer = engine.makePreviewLayer()
-        previewLayer.frame = container.bounds
-        previewLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        previewLayer.videoGravity = .resizeAspectFill
-        container.layer?.addSublayer(previewLayer)
-
-        panel.contentView = container
+        let view = CameraPreviewView(previewLayer: engine.makePreviewLayer(), shape: shape)
+        view.onFrameChange = { [weak view] in
+            if let width = view?.screenContentRect?.width {
+                ScreendropPreferences.recordingCameraPreviewWidth = width
+            }
+        }
+        panel.contentView = view
         panel.orderFrontRegardless()
+        lastPreviewFrame = content
+        previewMoveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification, object: panel, queue: .main
+        ) { [weak self, weak view] _ in
+            MainActor.assumeIsolated {
+                guard let view else { return }
+                self?.previewDidMove(view)
+            }
+        }
         previewPanel = panel
         activePreviewDisplayID = displayID
     }
 
+    private func previewDidMove(_ view: FloatingCardView) {
+        guard let content = view.screenContentRect else { return }
+        defer {
+            lastPreviewFrame = content
+            ScreendropPreferences.recordingCameraPreviewOrigin = content.origin
+        }
+        guard let last = lastPreviewFrame, last.size == content.size else { return }
+        FloatingOverlays.shared.move(by: CGVector(dx: content.minX - last.minX, dy: content.minY - last.minY))
+    }
+
+    func updatePreviewShape() {
+        (previewPanel?.contentView as? CameraPreviewView)?.shape = ScreendropPreferences.recordingCameraShape
+    }
+
     private func hidePreview() {
+        previewMoveObserver.map(NotificationCenter.default.removeObserver)
+        previewMoveObserver = nil
         previewPanel?.orderOut(nil)
         previewPanel = nil
         activePreviewDisplayID = nil
+    }
+}
+
+// MARK: - Floating preview
+
+private final class CameraPreviewView: FloatingCardView {
+    typealias Shape = RecordingCameraLayout.Shape
+
+    private static let widthRange: ClosedRange<CGFloat> = 100...480
+
+    static func contentSize(shape: Shape, width: CGFloat) -> CGSize {
+        let width = min(max(width, widthRange.lowerBound), widthRange.upperBound).rounded()
+        return CGSize(width: width, height: shape == .portrait ? (width * 4 / 3).rounded() : width)
+    }
+
+    var shape: Shape {
+        didSet {
+            guard shape != oldValue, let content = screenContentRect else { return }
+            let size = Self.contentSize(shape: shape, width: content.width)
+            setScreenContent(CGRect(x: content.maxX - size.width, y: content.minY, width: size.width, height: size.height))
+            needsLayout = true
+        }
+    }
+
+    init(previewLayer: AVCaptureVideoPreviewLayer, shape: Shape) {
+        self.shape = shape
+        previewLayer.videoGravity = .resizeAspectFill
+        super.init(contentLayer: previewLayer, keepsAspectRatio: true, background: .black, border: true)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var cornerRadius: CGFloat {
+        let short = min(contentRect.width, contentRect.height)
+        return shape == .circle ? short / 2 : short * 0.22
+    }
+
+    override var usesCircularCorners: Bool { shape == .circle }
+
+    override func fittedSize(_ proposed: CGSize) -> CGSize {
+        Self.contentSize(shape: shape, width: proposed.width)
     }
 }
 
@@ -326,7 +419,9 @@ nonisolated private final class CameraCaptureEngine: NSObject, AVCaptureVideoDat
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
-        if session.canSetSessionPreset(.hd1280x720) {
+        if session.canSetSessionPreset(.hd1920x1080) {
+            session.sessionPreset = .hd1920x1080
+        } else if session.canSetSessionPreset(.hd1280x720) {
             session.sessionPreset = .hd1280x720
         } else {
             session.sessionPreset = .high

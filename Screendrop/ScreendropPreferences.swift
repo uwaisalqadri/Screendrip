@@ -42,6 +42,9 @@ enum ScreendropPreferences {
     static let startingToolLastUsed = "lastUsed"
     static let trimFullscreenMenuBarKey = "trimFullscreenMenuBar"
     static let recordingCameraDeviceIDKey = "recordingCameraDeviceID"
+    static let recordingCameraShapeKey = "recordingCameraShape"
+    static let recordingCameraPreviewWidthKey = "recordingCameraPreviewWidth"
+    static let recordingCameraPreviewOriginKey = "recordingCameraPreviewOrigin"
     static let recordingMicrophoneDeviceIDKey = "recordingMicrophoneDeviceID"
     static let recordingSystemAudioKey = "recordingSystemAudio"
     static let recordingStartDelaySecondsKey = "recordingStartDelaySeconds"
@@ -112,6 +115,26 @@ enum ScreendropPreferences {
     static var recordingCameraDeviceID: String {
         get { UserDefaults.standard.string(forKey: recordingCameraDeviceIDKey) ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: recordingCameraDeviceIDKey) }
+    }
+
+    /// Shape of the floating camera preview while recording.
+    static var recordingCameraShape: RecordingCameraLayout.Shape {
+        UserDefaults.standard.string(forKey: recordingCameraShapeKey)
+            .flatMap(RecordingCameraLayout.Shape.init(rawValue:)) ?? .circle
+    }
+
+    static var recordingCameraPreviewOrigin: CGPoint? {
+        get { UserDefaults.standard.string(forKey: recordingCameraPreviewOriginKey).map(NSPointFromString) }
+        set { UserDefaults.standard.set(newValue.map(NSStringFromPoint), forKey: recordingCameraPreviewOriginKey) }
+    }
+
+    /// Width in points the user last resized the camera preview to.
+    static var recordingCameraPreviewWidth: CGFloat {
+        get {
+            let width = UserDefaults.standard.double(forKey: recordingCameraPreviewWidthKey)
+            return width > 0 ? width : 160
+        }
+        set { UserDefaults.standard.set(Double(newValue), forKey: recordingCameraPreviewWidthKey) }
     }
 
     /// Unique ID of the microphone captured during recordings. Empty = mic off.

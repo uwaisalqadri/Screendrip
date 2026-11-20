@@ -46,6 +46,7 @@ struct RecordingPickerControls: View {
     @State private var area = RecordingAreaSelectionPresenter.shared
     @State private var cameras = RecordingDeviceCatalog.cameras()
     @AppStorage(ScreendropPreferences.recordingCameraDeviceIDKey) private var cameraID = ""
+    @AppStorage(ScreendropPreferences.recordingCameraShapeKey) private var cameraShape = RecordingCameraLayout.Shape.circle
     @AppStorage(ScreendropPreferences.recordingMicrophoneDeviceIDKey) private var microphoneID = ""
     @AppStorage(ScreendropPreferences.recordingSystemAudioKey) private var systemAudio = false
     @AppStorage(ScreendropPreferences.recordingStartDelaySecondsKey) private var startDelaySeconds = 0
@@ -275,6 +276,19 @@ struct RecordingPickerControls: View {
                     selectCamera(device.uniqueID)
                 } label: {
                     menuSelectionLabel(device.localizedName, isSelected: cameraID == device.uniqueID)
+                }
+            }
+
+            Divider()
+
+            Section("Shape") {
+                ForEach(RecordingCameraLayout.Shape.allCases, id: \.self) { shape in
+                    Button {
+                        cameraShape = shape
+                        CameraRecordingManager.shared.updatePreviewShape()
+                    } label: {
+                        menuSelectionLabel(shape.title, isSelected: cameraShape == shape)
+                    }
                 }
             }
         } label: {

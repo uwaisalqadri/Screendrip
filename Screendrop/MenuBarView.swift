@@ -14,6 +14,7 @@ struct MenuBarView: View {
     @ObservedObject private var updaterManager = UpdaterManager.shared
     @State private var historyStore = ScreenshotHistoryStore.shared
     @State private var projectStore = RecordingProjectStore.shared
+    @State private var camera = CameraRecordingManager.shared
 
     var body: some View {
         Group {
@@ -45,6 +46,25 @@ struct MenuBarView: View {
                 RecordingPickerPresenter.shared.show()
             } label: {
                 Label("Record Screen", systemImage: "record.circle")
+            }
+
+            Button {
+                Task {
+                    if camera.isShownOnItsOwn {
+                        await camera.hideOnItsOwn()
+                    } else {
+                        await camera.showOnItsOwn()
+                    }
+                }
+            } label: {
+                Label(camera.isShownOnItsOwn ? "Hide Camera" : "Show Camera", systemImage: "video")
+            }
+
+            Menu {
+                Button("Add Image…") { FloatingOverlays.shared.addImage() }
+                Button("Add Running Text…") { FloatingOverlays.shared.addText() }
+            } label: {
+                Label("Overlays", systemImage: "rectangle.on.rectangle")
             }
 
             Divider()

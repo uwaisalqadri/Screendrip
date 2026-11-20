@@ -1226,7 +1226,7 @@ nonisolated private final class StudioFrameCompositor: @unchecked Sendable {
                 layout: frameLayout, into: destination
             )
         }
-        let resources = settled.map { resources(for: $0, layout: frameLayout) }
+        let resources = settled.map { self.resources(for: $0, layout: frameLayout) }
         let showsCamera = cameraFrame != nil && frameLayout.bubbleRect.width > 0 && frameLayout.cameraOpacity > 0.001
         let cameraSubmission = if let resources, let cameraFrame, showsCamera, frameLayout.cameraCutout <= 0.001 {
             prepareCamera(cameraFrame, resources: resources)
